@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from qsh.__main__ import main
 
@@ -20,7 +20,7 @@ class ConfigTests(unittest.TestCase):
                 with self.subTest(path=path), patch.dict(os.environ, {}, clear=True), \
                      patch("sys.argv", ["qsh", "--env-file", path, "--cwd", temp]), \
                      patch("qsh.__main__.Path.cwd", return_value=root), \
-                     patch("qsh.__main__.create_app") as create, patch("qsh.__main__.web.run_app"):
+                     patch("qsh.__main__.run_bot", new_callable=MagicMock) as create, patch("qsh.__main__.asyncio.run"):
                     main()
                     self.assertEqual(create.call_args.args[:2], ("custom-id", "custom-secret"))
 
@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
         with TemporaryDirectory() as temp, \
              patch("sys.argv", ["qsh", "--env-file", str(Path(temp) / "missing.env"),
                                 "--appid", "id", "--secret", "secret"]), \
-             patch("qsh.__main__.web.run_app") as run, redirect_stderr(StringIO()) as stderr:
+             patch("qsh.__main__.asyncio.run") as run, redirect_stderr(StringIO()) as stderr:
             with self.assertRaises(SystemExit) as error:
                 main()
             self.assertEqual(error.exception.code, 2)
@@ -49,7 +49,7 @@ class ConfigTests(unittest.TestCase):
             for env, argv, expected in cases:
                 with self.subTest(env=env, argv=argv), patch.dict(os.environ, env, clear=True), \
                      patch("sys.argv", ["qsh", *argv]), patch("qsh.__main__.Path.cwd", return_value=root), \
-                     patch("qsh.__main__.create_app") as create, patch("qsh.__main__.web.run_app"):
+                     patch("qsh.__main__.run_bot", new_callable=MagicMock) as create, patch("qsh.__main__.asyncio.run"):
                     main()
                     self.assertEqual(create.call_args.args[:2], expected)
                     self.assertEqual(dict(os.environ), env)
@@ -57,7 +57,7 @@ class ConfigTests(unittest.TestCase):
     def test_missing_credentials_do_not_start_service(self):
         with TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True), \
              patch("qsh.__main__.Path.cwd", return_value=Path(temp)), \
-             patch("sys.argv", ["qsh"]), patch("qsh.__main__.web.run_app") as run, \
+             patch("sys.argv", ["qsh"]), patch("qsh.__main__.asyncio.run") as run, \
              redirect_stderr(StringIO()) as stderr:
             with self.assertRaises(SystemExit) as error:
                 main()

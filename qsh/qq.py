@@ -1,44 +1,15 @@
-"""The current QQ OpenAPI: token cache, passive text replies and signatures."""
+"""The current QQ OpenAPI: token cache, gateway discovery and passive text replies."""
 
 import asyncio
 import time
 from urllib.parse import quote
 
 from aiohttp import ClientSession
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 API_BASE = "https://api.bot.qq.com"
 
 
 class APIError(Exception):
     pass
-
-
-class Signature:
-    def __init__(self, secret: str):
-        seed = secret.encode("utf-8")
-        if not seed:
-            raise ValueError("secret 不能为空")
-        seed = (seed * ((32 + len(seed) - 1) // len(seed)))[:32]
-        self.key = Ed25519PrivateKey.from_private_bytes(seed)
-
-    def verify(self, timestamp: str, body: bytes, signature: str) -> bool:
-        if not timestamp or not signature:
-            return False
-        try:
-            self.key.public_key().verify(
-                bytes.fromhex(signature), timestamp.encode("utf-8") + body
-            )
-            return True
-        except (ValueError, InvalidSignature):
-            return False
-
-    def challenge(self, plain_token: str, event_ts: str) -> dict:
-        return {
-            "plain_token": plain_token,
-            "signature": self.key.sign((event_ts + plain_token).encode("utf-8")).hex(),
-        }
 
 
 class QQAPI:
@@ -50,9 +21,9 @@ class QQAPI:
         self._refresh_at = 0.0
         self._token_lock = asyncio.Lock()
 
-    async def _post(self, path: str, payload: dict, headers: dict | None = None) -> dict:
-        async with self.session.post(
-            API_BASE + path, json=payload, headers=headers
+    async def _request(self, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> dict:
+        async with self.session.request(
+            method, API_BASE + path, json=payload, headers=headers
         ) as response:
             try:
                 data = await response.json(content_type=None)
@@ -70,8 +41,8 @@ class QQAPI:
     async def token(self) -> str:
         async with self._token_lock:
             if time.monotonic() >= self._refresh_at:
-                data = await self._post(
-                    "/app/getAppAccessToken",
+                data = await self._request(
+                    "POST", "/app/getAppAccessToken",
                     {"appId": self.appid, "clientSecret": self.secret},
                 )
                 token = data.get("access_token")
@@ -85,11 +56,23 @@ class QQAPI:
                 self._refresh_at = time.monotonic() + max(0, ttl - 55)
             return self._token
 
+    def invalidate_token(self):
+        self._refresh_at = 0.0
+
+    async def gateway(self) -> str:
+        data = await self._request(
+            "GET", "/gateway", headers={"Authorization": f"QQBot {await self.token()}"}
+        )
+        url = data.get("url")
+        if not isinstance(url, str) or not url.startswith("wss://"):
+            raise APIError("QQ 未返回有效 WSS 网关地址")
+        return url
+
     async def reply(self, kind: str, target: str, message_id: str, content: str):
         token = await self.token()
         resource = "groups" if kind == "group" else "users"
-        await self._post(
-            f"/v2/{resource}/{quote(target, safe='')}/messages",
+        await self._request(
+            "POST", f"/v2/{resource}/{quote(target, safe='')}/messages",
             {"msg_type": 0, "content": content, "msg_id": message_id, "msg_seq": 1},
             {"Authorization": f"QQBot {token}"},
         )

@@ -1,6 +1,6 @@
 # qsh — QQ Shell
 
-Python QQ 机器人，通过当前官方 REST API 与带 Ed25519 签名验证的 Webhook 接收指令、回复结果。支持 QQ 单聊和群内 @机器人。
+Python QQ 机器人，通过 QQ WebSocket 网关接收指令，通过当前官方 REST API 回复结果。支持 QQ 单聊和群内 @机器人。
 
 ## 安装与启动
 
@@ -41,20 +41,18 @@ QQ_SECRET=your_app_secret
 | `--secret SECRET` | 应用 AppSecret；未传时读取 `QQ_SECRET` |
 | `--env-file PATH` | 环境文件路径，默认启动目录下的 `.env` |
 | `--cwd CWD` | 初始目录，默认进程启动目录 |
-| `--host HOST` | HTTP 监听地址，默认 `127.0.0.1` |
-| `--port PORT` | HTTP 监听端口，默认 `8080` |
 
 `--cwd` **仅作为初始目录**，允许绝对路径、`..`、`~` 和符号链接，能够读取机器人进程有权限读取的任何普通文本文件。应在 QQ 后台配置好可使用机器人的测试用户与群。群内执行结果对群成员可见。命令行中的 Secret 应妥善保管。
 
 ## QQ 后台配置
 
 1. 在 [QQ 开放平台](https://q.qq.com/) 创建机器人，取得 AppID 和 AppSecret，配置允许测试的单聊用户和 QQ 群。
-2. 启动 qsh，将公网 **HTTPS** 地址（例如 `https://bot.example.com/qqbot`）反向代理到 `http://127.0.0.1:8080/qqbot`。本程序提供 HTTP 服务，TLS 由反向代理或隧道服务终止；本机地址不能直接作为公网回调地址。
-3. 在开发管理后台配置该回调地址。qsh 自动处理 `op=13` 验证。平台允许的回调端口是 80、443、8080、8443。
-4. 订阅 `C2C_MESSAGE_CREATE` 和 `GROUP_AT_MESSAGE_CREATE`，并按后台要求配置调用 API 的服务器出口 IP 白名单、消息发送权限。
+2. 在后台选择/启用 WebSocket 事件接入方式；若之前配置了 Webhook，按后台提供的选项停用或切换该链路。不同应用能否使用 WebSocket，以平台实际开放能力和登录结果为准。
+3. 按后台要求配置调用 API 的服务器公网出口 IP 白名单、消息发送及群聊/单聊事件权限。
+4. 启动 `.venv/bin/qsh --env-file /你的路径/.env`。程序获取访问凭证，调用 `GET /gateway`，连接返回的 WSS 地址并通过 Identify 订阅群聊/单聊事件（`1 << 25`）。日志出现“QQ WebSocket 已就绪”表示登录成功。
 5. 单聊发送 `ls`，或在群内发送 `@机器人 ls`。
 
-反向代理应保留原始请求体及 `X-Bot-Appid`、`X-Signature-Timestamp`、`X-Signature-Ed25519` 请求头。业务事件必须验签通过才会执行命令。
+本机只需出站访问 QQ HTTPS/WSS 服务，无需公网回调地址、HTTP 监听端口、内网穿透或 Tailscale Funnel。本版本已删除 Webhook 服务及 `--host`、`--port` 参数。现有 Funnel 不会由程序自动关闭；若该入口只用于 qsh，可自行停用。
 
 ## 命令
 
@@ -108,11 +106,14 @@ grep -q "pattern" file.txt || cat fallback.txt
 - `qsh/shell.py`：管道语法解析及会话目录。
 - `qsh/programs.py`：固定外部程序的解析、执行、超时及输出采集。
 - `qsh/output.py`：共享回复长度限制。
-- `qsh/qq.py`：`https://api.bot.qq.com` 上的凭证获取、缓存刷新、单聊/群聊被动回复，以及 Webhook 签名算法。
-- `qsh/server.py`：回调验证、事件解析、内存去重、有界消息队列与后台处理。
-- `qsh/__main__.py`：启动参数与 HTTP 服务。
+- `qsh/qq.py`：`https://api.bot.qq.com` 上的凭证获取、缓存刷新、网关发现及单聊/群聊被动回复。
+- `qsh/gateway.py`：WebSocket 登录、心跳 ACK、会话恢复、自动重连及生命周期。
+- `qsh/runtime.py`：事件解析、内存去重、有界消息队列与后台命令处理。
+- `qsh/__main__.py`：启动参数与异步程序入口。
 
-Webhook 验签后入队并立即 ACK，文件操作在线程中执行，避免阻塞回调。当前版本使用一个后台消费者按接收顺序执行命令和回复，适合小规模个人使用；API 请求超时为 15 秒。队列最多 256 条，满时返回 503，不将未入队消息标记为已接收。
+消息事件入队后更新网关序列号，文件操作和外部程序在线程中执行，不阻塞心跳。使用一个后台消费者按接收顺序执行命令和回复，适合小规模个人使用。队列最多 256 条，满时断开并尝试通过 Resume 补发；尚未入队的事件不更新序列号，也不计入去重记录。
+
+按网关 Hello 指定周期发送心跳，下一周期未收到 ACK 时重连；断线/网关要求重连时带 session_id 与已接收序列号恢复会话。遇到 Invalid Session 清除恢复状态并重新鉴权。连接失败以 1–30 秒退避重试，成功登录后重置。REST 请求和网关登录均有超时，退出时最多等待 20 秒处理已入队消息。进程重启不恢复网关会话。
 
 接收去重记录保留至多两小时、10000 条，目录、队列与去重均仅在内存中。不保证进程崩溃后的消息恢复；发送失败记录错误而不自动重发，避免不确定的发送结果产生重复消息。未实现持久化、额外用户授权系统、频道消息或任意程序执行。
 
@@ -123,17 +124,17 @@ Webhook 验签后入队并立即 ACK，文件操作在线程中执行，避免�
 .venv/bin/python -m pip check
 ```
 
-测试包含系统命令、目录隔离、多级管道、逻辑短路及退出状态、目录切换后组合执行、引号和转义、程序环境隔离、超时清理、输出上限、官方签名固定样例、Webhook 防篡改、地址验证、去重、队列背压、消息路由、REST 凭证缓存以及 HTTP 200 业务错误。协议测试会监听本机临时端口，不访问真实 QQ 服务。
+测试包含系统命令、目录隔离、多级管道、逻辑短路及退出状态、目录切换后组合执行、引号和转义、程序环境隔离、超时清理、输出上限、WebSocket Identify/Resume、心跳 ACK、无效会话、补发去重、队列背压、消息路由、REST 凭证缓存以及 HTTP 200 业务错误。协议测试会监听本机临时端口，不访问真实 QQ 服务。
 
 ## API 核对依据
 
-2026-11-08 核对当前官方文档后直接实现协议，未依赖旧的 `botpy` SDK。`botpy 1.2.1` 的已安装源码仍指向 `bots.qq.com` 与 `api.sgroup.qq.com`；当前官方文档统一使用 `api.bot.qq.com`。本文不将旧域名判定为已失效，也不假定当前文档中的 WebSocket 入口已删除；本项目选择单一 Webhook 接入方式。
+2026-11-08 核对当前官方文档后直接实现协议，未依赖旧 `botpy` SDK。REST 与网关发现统一使用 `https://api.bot.qq.com`，WebSocket 地址使用 `GET /gateway` 的返回值，不硬编码旧域名。
 
 - [获取访问凭证](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/access-token.html)：AppID/ClientSecret、有效期及 HTTP 200 中的业务错误。
 - [API 调用指南](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html)：统一域名、QQBot 鉴权与 err_code。
-- [事件订阅与通知](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html)：Webhook、op=13 验证与固定签名样例。
-- [安全和授权](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/sign.html)：Ed25519 种子派生与原始请求体验签。
+- [事件订阅与通知](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html)：WebSocket Hello、Identify、Heartbeat、Resume 与群聊/单聊 intents。
+- [获取 WSS 接入点](https://bot.q.qq.com/wiki/develop/api-v2/openapi/wss/url_get.html)。
 - [发送单聊消息](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)、[发送群聊消息](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)。
 - [单聊事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/c2c_message_create.html)、[群 @事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_at_message_create.html)。
 
-本地模拟协议测试不代表真实 AppID 下的 QQ 联调完成；实际上线还需完成凭证、公网 HTTPS 回调、事件订阅及平台权限配置。
+本地模拟协议测试不代表当前 AppID 的真实 QQ 消息收发已完成；实际使用需确认平台为该应用开放 WebSocket 接入和相应权限。

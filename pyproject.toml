@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qsh"
 version = "0.1.0"
-description = "A QQ bot shell using the official REST API and signed webhooks"
+description = "A QQ bot shell using the official REST API and WebSocket events"
 requires-python = ">=3.11"
-dependencies = ["aiohttp>=3.12,<4", "cryptography>=44,<47", "python-dotenv>=1.0,<2"]
+dependencies = ["aiohttp>=3.12,<4", "python-dotenv>=1.0,<2"]
 
 [project.scripts]
 qsh = "qsh.__main__:main"
