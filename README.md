@@ -44,6 +44,46 @@ QQ_SECRET=your_app_secret
 
 `--cwd` **仅作为初始目录**，允许绝对路径、`..`、`~` 和符号链接，能够读取机器人进程有权限读取的任何普通文本文件。应在 QQ 后台配置好可使用机器人的测试用户与群。群内执行结果对群成员可见。命令行中的 Secret 应妥善保管。
 
+## Linux systemd 服务部署
+
+部署脚本为 [scripts/deploy.py](scripts/deploy.py)，需要使用 systemd 的 Linux（含 `systemctl`、`systemd-analyze`）、Python 3.11+（含 `venv`/`pip`）及 `util-linux` 提供的 `runuser`。将仓库放在服务用户能够读取、进入和写入的位置，以便创建和更新 `.venv`。例如，以准备运行机器人的普通用户登录服务器，在仓库目录执行：
+
+```sh
+cp .env.example .env
+chmod 600 .env
+# 编辑 .env，填写真实 QQ_APPID 和 QQ_SECRET
+sudo python3 scripts/deploy.py install --user "$(id -un)"
+```
+
+`install` 会创建/复用项目的 `.venv`、以指定普通用户安装项目依赖并检查凭证文件，然后写入 `/etc/systemd/system/qsh.service`、启用开机启动并立即启动服务。服务不以 root 运行，凭证值不写入 unit 或启动参数。安装成功表示 systemd 接受了启动请求，QQ 登录是否成功以日志为准。安装前应停止原来的手动 qsh 进程，避免同一机器人重复连接。
+
+可指定已有的其他普通用户、环境文件和机器人初始目录：
+
+```sh
+sudo python3 scripts/deploy.py install --user bot --env-file /srv/qsh/.env --cwd /srv/work
+```
+
+脚本不会创建用户或更改仓库归属；该用户必须能写入项目及虚拟环境、读取 `.env`、进入初始工作目录。参数中的相对路径以运行部署脚本时的目录为基准；未指定时，环境文件和初始目录默认使用项目根目录。保持仓库位置不变；移动后需重新安装服务。
+
+```sh
+sudo python3 scripts/deploy.py status
+sudo python3 scripts/deploy.py logs      # 最近 100 行并持续跟随，Ctrl+C 退出
+sudo python3 scripts/deploy.py stop
+sudo python3 scripts/deploy.py start
+sudo python3 scripts/deploy.py restart
+sudo python3 scripts/deploy.py uninstall
+```
+
+服务登录系统前即可启动，退出后自动重启；日志交给 journald 管理。停止时向 qsh 发送 SIGTERM，程序停止网关连接并最多等待 20 秒处理队列，systemd 的总停止期限为 30 秒，最后清理服务控制组中的残余进程。`stop` 仅停止当前运行，开机启动仍保留；`uninstall` 停止并禁用服务、删除 unit，保留源码、虚拟环境、凭证与历史日志。
+
+更新代码后重新运行 `install`，会更新依赖并重启；仅修改 `.env` 后使用 `restart` 即可。部署脚本不会自动拉取 Git 代码。在 macOS 等非 Linux 环境中，可仅预览配置而不安装：
+
+```sh
+python3 scripts/deploy.py render --user bot --env-file /srv/qsh/.env --cwd /srv/work
+```
+
+systemd 服务不会继承当前终端的 Tailscale/代理环境变量；服务器需要能直接连接 QQ HTTPS/WSS 服务。如需代理，另行配置服务出站网络。无需公网入站端口。
+
 ## QQ 后台配置
 
 1. 在 [QQ 开放平台](https://q.qq.com/) 创建机器人，取得 AppID 和 AppSecret，配置允许测试的单聊用户和 QQ 群。

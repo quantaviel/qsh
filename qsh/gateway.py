@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import math
+import signal
 from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType
@@ -141,17 +142,35 @@ class Gateway:
 
 
 async def run_bot(appid: str, secret: str, cwd: Path):
-    async with ClientSession(timeout=ClientTimeout(total=15)) as session:
-        api = QQAPI(session, appid, secret)
-        runtime = Runtime(cwd, api)
-        worker = asyncio.create_task(runtime.worker())
-        LOG.info("正在连接 QQ WebSocket；初始目录：%s", cwd)
-        try:
-            await Gateway(session, api, runtime).run()
-        finally:
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    stopping = False
+
+    def stop():
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            LOG.info("收到 SIGTERM，停止接收消息并等待队列处理")
+            task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, stop)
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            api = QQAPI(session, appid, secret)
+            runtime = Runtime(cwd, api)
+            worker = asyncio.create_task(runtime.worker())
+            LOG.info("正在连接 QQ WebSocket；初始目录：%s", cwd)
             try:
-                await asyncio.wait_for(runtime.queue.join(), timeout=20)
-            except TimeoutError:
-                LOG.warning("退出时仍有未完成消息；队列和会话状态不持久化")
-            worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
+                await Gateway(session, api, runtime).run()
+            finally:
+                try:
+                    await asyncio.wait_for(runtime.queue.join(), timeout=20)
+                except TimeoutError:
+                    LOG.warning("退出时仍有未完成消息；队列和会话状态不持久化")
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+    except asyncio.CancelledError:
+        if not stopping:
+            raise
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
