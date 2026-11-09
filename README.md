@@ -1,6 +1,6 @@
 # qsh — QQ Shell
 
-Python QQ 机器人，通过 QQ WebSocket 网关接收指令，通过当前官方 REST API 回复结果。支持 QQ 单聊和群内 @机器人。
+Python QQ 机器人，通过 QQ WebSocket 网关接收指令，通过当前官方 REST API 回复结果。支持 QQ 单聊和群内 @机器人；群事件兼容 `GROUP_AT_MESSAGE_CREATE` 与实际网关下发的 `GROUP_MESSAGE_CREATE`。
 
 ## 安装与启动
 
@@ -178,3 +178,7 @@ grep -q "pattern" file.txt || cat fallback.txt
 - [单聊事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/c2c_message_create.html)、[群 @事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_at_message_create.html)。
 
 本地模拟协议测试不代表当前 AppID 的真实 QQ 消息收发已完成；实际使用需确认平台为该应用开放 WebSocket 接入和相应权限。
+
+## 群聊交互排查
+
+服务日志会记录网关事件类型、消息入队场景和回复成功状态，不记录消息正文、用户/群标识或凭证。群聊无回复时，先查看 `journalctl -u qsh.service`：没有群事件时检查平台群聊接入配置；有事件但未入队时检查事件路由或解析警告；已入队但回复失败时检查 QQ API 错误码。`GROUP_MESSAGE_CREATE` 与 `GROUP_AT_MESSAGE_CREATE` 共用群会话和去重逻辑，避免同一消息被重复执行。

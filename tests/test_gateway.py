@@ -180,6 +180,20 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call.args[-1] == str(self.root) for call in calls[2:]))
         self.assertEqual(calls[-1].args[:3], ("c2c", "alice", "c2c"))
 
+    async def test_group_message_create_routes_and_deduplicates(self):
+        payload = event(1, "<@!BOT_OPENID_ABC123> pwd")
+        payload["t"] = "GROUP_MESSAGE_CREATE"
+        self.runtime.accept(payload)
+        # The same group message delivered under either event name is one
+        # command, and shares the same session directory.
+        duplicate = dict(payload, t="GROUP_AT_MESSAGE_CREATE")
+        self.runtime.accept(duplicate)
+        worker = asyncio.create_task(self.runtime.worker())
+        await asyncio.wait_for(self.runtime.queue.join(), 3)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        self.api.reply.assert_awaited_once_with("group", "group1", "1", str(self.root))
+
     async def test_gateway_discovery_and_runner_cleanup(self):
         async def discover(request):
             self.assertEqual(request.headers["Authorization"], "QQBot test-token")

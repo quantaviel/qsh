@@ -99,6 +99,8 @@ class Gateway:
                         raise Reconnect("会话无效，将重新鉴权；请检查平台接入方式及事件权限")
                     elif op == 0:
                         event = payload.get("t")
+                        if isinstance(event, str):
+                            LOG.info("收到网关事件：%s", event[:64])
                         if event == "READY":
                             data = payload.get("d")
                             sid = data.get("session_id") if isinstance(data, dict) else None
@@ -113,8 +115,8 @@ class Gateway:
                         else:
                             try:
                                 self.runtime.accept(payload)
-                            except ValueError:
-                                LOG.warning("忽略格式无效的消息事件")
+                            except ValueError as error:
+                                LOG.warning("忽略格式无效的消息事件：%s", error)
                             except asyncio.QueueFull:
                                 raise Reconnect("消息队列已满，尝试重连恢复") from None
                         # Advance only after the event has been accepted.

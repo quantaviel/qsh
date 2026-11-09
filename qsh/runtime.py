@@ -16,7 +16,8 @@ LOG = logging.getLogger(__name__)
 def message_event(payload: dict) -> tuple | None:
     if not isinstance(payload.get("t"), str):
         return None
-    kind = {"C2C_MESSAGE_CREATE": "c2c", "GROUP_AT_MESSAGE_CREATE": "group"}.get(
+    kind = {"C2C_MESSAGE_CREATE": "c2c", "GROUP_AT_MESSAGE_CREATE": "group",
+            "GROUP_MESSAGE_CREATE": "group"}.get(
         payload.get("t")
     )
     if kind is None:
@@ -36,7 +37,8 @@ def message_event(payload: dict) -> tuple | None:
     if not isinstance(content, str):
         raise ValueError("无效消息正文")
     if kind == "group":
-        content = re.sub(r"^\s*<@!?\d+>\s*", "", content)
+        # Group mentions may contain an opaque OpenID, not a numeric QQ ID.
+        content = re.sub(r"^\s*<@!?[^>\s]+>\s*", "", content)
     return kind, target, user, message_id, content.strip()
 
 
@@ -60,6 +62,7 @@ class Runtime:
             # On overflow the gateway reconnects without advancing its sequence,
             # allowing the server to replay this unaccepted event on Resume.
             self.queue.put_nowait(event)
+            LOG.info("消息已入队：场景=%s", event[0])
             self.seen[key] = now
             if len(self.seen) > 10000:
                 self.seen.popitem(last=False)
@@ -75,6 +78,7 @@ class Runtime:
                     self.shells[key] = Shell(self.cwd)
                 result = await asyncio.to_thread(self.shells[key].execute, content)
                 await self.api.reply(kind, target, message_id, result)
+                LOG.info("消息回复成功：场景=%s", kind)
             except Exception as error:
                 LOG.error("处理或回复失败（%s）：%s", type(error).__name__, error)
             finally:
